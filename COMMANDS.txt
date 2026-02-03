@@ -1,0 +1,15 @@
+~ - stutter
+\ - fade sample out
+/ - fade sample in
+R - reverse sample
+L - Toggle low pass filter (need to look-ahead for '<', '>')
+H - Toggle high pass filter (need to look-ahead for '<', '>')
+* - Toggle distortion
+< - if this is present directly after a L, H, or *, then fade the effect in, timing from the first command to the next instance, or the end of this beat if not present
+> - if this is present directly after a L, H, or *, then fade the effect out, timing from the first command to the next instance, or the end of this beat if not present
+^ - if this is present directly after a L, H, or *, then the effect will be continued for the current beat, then switched off.
+( - half BPM until ')' is encountered (Do not change pitch - using timestretching)
+[ - double BPM until ']' is encountered (Do not change pitch - using timestretching) 
+q,w,e,r,t,y,u,i,o,p - pitch up by 1,2,3,4,5,6,7,8,9,10 cents respectively
+a,s,d,f,g,h,j,k,l - pitch down by 1,2,3,4,5,6,7,8,9 cents respectively
+- - repeat the previous command (does nothing for '(' and ']')

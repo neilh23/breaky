@@ -1,0 +1,18 @@
+[package]
+name = "breaky"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+cpal = "0.15"
+crossterm = "0.28"
+ratatui = "0.29"
+rustfft = "6"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+[dependencies.symphonia]
+version = "0.5"
+features = ["mp3", "isomp4", "aac", "flac", "ogg", "vorbis", "wav", "pcm"]
