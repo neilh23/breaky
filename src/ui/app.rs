@@ -31,6 +31,7 @@ pub struct App {
     pub status_message: String,
     pub confirm_prompt: String,
     pub dirty: bool,
+    pub current_bank: u8,
 }
 
 impl App {
@@ -81,8 +82,8 @@ impl App {
         };
 
         let text = format!(
-            "  BPM: {:.1}    Beats: {}    Mode: {}",
-            self.bpm, self.num_slices, mode_str
+            "  BPM: {:.1}    Beats: {}    Bank: {}    Mode: {}",
+            self.bpm, self.num_slices, self.current_bank, mode_str
         );
         let block = Block::default().borders(Borders::ALL);
         let paragraph = Paragraph::new(text).block(block);
@@ -311,6 +312,8 @@ fn command_char_style(ch: char) -> Style {
         '(' | ')' | '[' | ']' => Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
+        // Bank selection
+        '0' | '1' => Style::default().fg(Color::LightYellow),
         // Pitch up: q-p
         'q' | 'w' | 'e' | 'r' | 't' | 'y' | 'u' | 'i' | 'o' | 'p' => {
             Style::default().fg(Color::LightGreen)

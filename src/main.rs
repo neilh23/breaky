@@ -168,10 +168,11 @@ fn main() -> Result<()> {
         status_message: String::new(),
         confirm_prompt: String::new(),
         dirty: false,
+        current_bank: 0,
     };
 
-    // Sequencer timing: one full cycle = audio duration
-    let step_duration = Duration::from_secs_f64(duration_secs / total_steps as f64);
+    // Sequencer timing: one full cycle = half audio duration (since we have 32 slices now)
+    let step_duration = Duration::from_secs_f64(duration_secs / (total_steps as f64 * 2.0));
     let mut current_step: usize = 0;
     let mut last_step = Instant::now();
     let mut sequencer_playing = true;
@@ -182,6 +183,7 @@ fn main() -> Result<()> {
     let mut cursor_line: usize = 0;
     let mut cursor_col: usize = 0;
     let mut paste_buffer: Option<String> = None;
+    let mut current_bank: u8 = 0;
 
     // Command / confirm state
     let mut command_mode = false;
@@ -217,6 +219,7 @@ fn main() -> Result<()> {
         app.status_message.clone_from(&status_message);
         app.confirm_prompt.clone_from(&confirm_prompt);
         app.dirty = dirty;
+        app.current_bank = current_bank;
 
         terminal.draw(|frame| app.render(frame))?;
 
@@ -232,34 +235,42 @@ fn main() -> Result<()> {
             }
 
             match beat_sequence[current_step] {
-                Some(idx) if idx < num_slices => {
-                    let slice = &slices[idx];
+                Some(base_idx) => {
                     let effects = if current_step < effect_sequence.len() {
                         &effect_sequence[current_step]
                     } else {
                         &engine::effects::StepEffects::default()
                     };
 
-                    if effects.reverse {
-                        // Start from end of slice, audio callback reads backward
-                        state.trigger_slice(
-                            idx as u8,
-                            (slice.end - 1) as u32,
-                            PlayMode::FreeRun,
-                        );
-                    } else if effects.stutter {
-                        state.trigger_slice(
-                            idx as u8,
-                            slice.start as u32,
-                            PlayMode::FreeRun,
-                        );
-                        state.trigger_stutter(stutter_len);
+                    // Apply bank offset to slice index
+                    let idx = base_idx + (effects.bank as usize * analysis::slicer::SLICES_PER_BANK);
+
+                    if idx < num_slices {
+                        let slice = &slices[idx];
+
+                        if effects.reverse {
+                            // Start from end of slice, audio callback reads backward
+                            state.trigger_slice(
+                                idx as u8,
+                                (slice.end - 1) as u32,
+                                PlayMode::FreeRun,
+                            );
+                        } else if effects.stutter {
+                            state.trigger_slice(
+                                idx as u8,
+                                slice.start as u32,
+                                PlayMode::FreeRun,
+                            );
+                            state.trigger_stutter(stutter_len);
+                        } else {
+                            state.trigger_slice(
+                                idx as u8,
+                                slice.start as u32,
+                                PlayMode::FreeRun,
+                            );
+                        }
                     } else {
-                        state.trigger_slice(
-                            idx as u8,
-                            slice.start as u32,
-                            PlayMode::FreeRun,
-                        );
+                        state.stop();
                     }
                 }
                 _ => {
@@ -379,6 +390,7 @@ fn main() -> Result<()> {
                         &mut sequencer_playing,
                         &mut last_step,
                         &mut dirty,
+                        &mut current_bank,
                     );
                 } else {
                     // --- Normal mode ---
@@ -406,14 +418,22 @@ fn main() -> Result<()> {
                             }
                         }
                         KeyCode::Char('n') if is_ctrl => {
-                            app.beats.push("--------".to_string());
+                            app.beats.push("----------------".to_string());
                             beat_sequence = recompute_sequence(&app.beats);
                             effect_sequence = engine::effects::compute_effect_sequence(&app.beats);
                             total_steps = beat_sequence.len();
                             dirty = true;
                         }
+                        KeyCode::Char('0') => {
+                            current_bank = 0;
+                        }
+                        KeyCode::Char('1') => {
+                            current_bank = 1;
+                        }
                         code => {
-                            if let Some(idx) = key_to_slice(code) {
+                            if let Some(base_idx) = key_to_slice(code) {
+                                // Apply bank offset
+                                let idx = base_idx + (current_bank as usize * analysis::slicer::SLICES_PER_BANK);
                                 if idx < num_slices {
                                     let slice = &slices[idx];
                                     let mode = if is_shift(key.modifiers) {
@@ -631,6 +651,7 @@ fn handle_edit_key(
     sequencer_playing: &mut bool,
     last_step: &mut Instant,
     dirty: &mut bool,
+    current_bank: &mut u8,
 ) {
     use config::{visual_col_to_segment_step, ParsedBeatLine};
 
@@ -757,6 +778,12 @@ fn handle_edit_key(
                 state.trigger_stutter(stutter_len);
             }
         }
+        KeyCode::Char('0') => {
+            *current_bank = 0;
+        }
+        KeyCode::Char('1') => {
+            *current_bank = 1;
+        }
         code => {
             let parsed = ParsedBeatLine::parse(&beats[*cursor_line]);
             if let Some((seg_idx, step_idx)) =
@@ -769,12 +796,25 @@ fn handle_edit_key(
                     if let Some(ch) = key_to_beat_char(code) {
                         let mut new_parsed = parsed.clone();
                         new_parsed.notes[step_idx] = ch;
+
+                        // If current bank is not 0, write bank to command sequence
+                        if *current_bank != 0 {
+                            // Ensure we have at least one command segment
+                            if new_parsed.commands.is_empty() {
+                                new_parsed.commands.push(vec!['-'; new_parsed.notes.len()]);
+                            }
+                            // Write bank number to first command segment
+                            let bank_char = char::from_digit(*current_bank as u32, 10).unwrap_or('0');
+                            new_parsed.commands[0][step_idx] = bank_char;
+                        }
+
                         beats[*cursor_line] = new_parsed.to_raw();
                         *dirty = true;
                         did_edit = true;
 
-                        // Preview the note
-                        if let Some(idx) = config::char_to_slice(ch) {
+                        // Preview the note (with bank offset)
+                        if let Some(base_idx) = config::char_to_slice(ch) {
+                            let idx = base_idx + (*current_bank as usize * analysis::slicer::SLICES_PER_BANK);
                             if idx < num_slices {
                                 state.trigger_slice(
                                     idx as u8,

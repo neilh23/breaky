@@ -1,4 +1,5 @@
-pub const MAX_SLICES: usize = 16;
+pub const MAX_SLICES: usize = 32;
+pub const SLICES_PER_BANK: usize = 16;
 
 /// Maximum snap distance as a fraction of the ideal slice length.
 /// If the nearest onset is further than this, use the ideal position instead.

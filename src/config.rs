@@ -11,12 +11,12 @@ pub struct BreakConfig {
 }
 
 impl BreakConfig {
-    /// Create a default config that plays all 16 slices in order across two bars.
+    /// Create a default config that plays all 16 slices in order.
     pub fn default_for(file_name: &str, bpm: f64) -> Self {
         Self {
             sample: file_name.to_string(),
             bpm,
-            beats: vec!["qwertyui".to_string(), "asdfghjk".to_string()],
+            beats: vec!["qwertyuiasdfghjk".to_string()],
         }
     }
 
@@ -144,33 +144,35 @@ pub fn is_valid_command_char(c: char) -> bool {
             | '(' | ')' | '[' | ']'
             | 'q' | 'w' | 'e' | 'r' | 't' | 'y' | 'u' | 'i' | 'o' | 'p'
             | 'a' | 's' | 'd' | 'f' | 'g' | 'h' | 'j' | 'k' | 'l'
+            | '0' | '1'  // Bank selection
             | '-'
     )
 }
 
 /// Map a command-segment character to a pitch shift in cents.
 /// Positive = up, negative = down. Returns 0 for non-pitch characters.
+/// Each step is one semitone (100 cents).
 pub fn command_to_pitch_cents(c: char) -> i32 {
     match c {
-        'q' => 1,
-        'w' => 2,
-        'e' => 3,
-        'r' => 4,
-        't' => 5,
-        'y' => 6,
-        'u' => 7,
-        'i' => 8,
-        'o' => 9,
-        'p' => 10,
-        'a' => -1,
-        's' => -2,
-        'd' => -3,
-        'f' => -4,
-        'g' => -5,
-        'h' => -6,
-        'j' => -7,
-        'k' => -8,
-        'l' => -9,
+        'q' => 100,   // +1 semitone
+        'w' => 200,   // +2 semitones
+        'e' => 300,   // +3 semitones
+        'r' => 400,   // +4 semitones
+        't' => 500,   // +5 semitones
+        'y' => 600,   // +6 semitones
+        'u' => 700,   // +7 semitones
+        'i' => 800,   // +8 semitones
+        'o' => 900,   // +9 semitones
+        'p' => 1000,  // +10 semitones
+        'a' => -100,  // -1 semitone
+        's' => -200,  // -2 semitones
+        'd' => -300,  // -3 semitones
+        'f' => -400,  // -4 semitones
+        'g' => -500,  // -5 semitones
+        'h' => -600,  // -6 semitones
+        'j' => -700,  // -7 semitones
+        'k' => -800,  // -8 semitones
+        'l' => -900,  // -9 semitones
         _ => 0,
     }
 }

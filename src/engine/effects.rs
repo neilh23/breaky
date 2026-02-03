@@ -16,6 +16,7 @@ pub struct StepEffects {
     pub fade_in: f32,
     pub fade_out: f32,
     pub pitch_cents: i32,
+    pub bank: u8,  // Bank selection (0 or 1), adds bank * 16 to slice index
 }
 
 impl StepEffects {
@@ -48,11 +49,13 @@ impl StepEffects {
         v |= ((self.highpass_mix * 255.0) as u64 & 0xFF) << 23;
         v |= ((self.fade_in * 255.0) as u64 & 0xFF) << 31;
         v |= ((self.fade_out * 255.0) as u64 & 0xFF) << 39;
-        v |= ((self.pitch_cents as i8 as u8 as u64) & 0xFF) << 47;
+        // Store pitch_cents as i16 (16 bits) to handle semitone values (-1200 to +1200)
+        v |= ((self.pitch_cents as i16 as u16 as u64) & 0xFFFF) << 47;
         v
     }
 
     /// Unpack from a u64.
+    /// Note: bank is not packed (only used for slice selection, not audio processing)
     pub fn unpack(v: u64) -> Self {
         StepEffects {
             reverse: v & (1 << 0) != 0,
@@ -67,7 +70,8 @@ impl StepEffects {
             highpass_mix: ((v >> 23) & 0xFF) as f32 / 255.0,
             fade_in: ((v >> 31) & 0xFF) as f32 / 255.0,
             fade_out: ((v >> 39) & 0xFF) as f32 / 255.0,
-            pitch_cents: ((v >> 47) & 0xFF) as u8 as i8 as i32,
+            pitch_cents: ((v >> 47) & 0xFFFF) as u16 as i16 as i32,
+            bank: 0,
         }
     }
 }
@@ -199,6 +203,14 @@ fn process_command_segment(cmd: &[char], effects: &mut [StepEffects]) {
             }
             ')' | ']' => {
                 // End markers handled by '(' and '['
+            }
+            '0' => {
+                // Bank 0 (slices 0-15)
+                effects[i].bank = 0;
+            }
+            '1' => {
+                // Bank 1 (slices 16-31)
+                effects[i].bank = 1;
             }
             _ => {
                 // Check for pitch shift

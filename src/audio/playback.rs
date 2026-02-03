@@ -219,12 +219,15 @@ fn build_stream<T: SampleConvert + cpal::SizedSample + Send + 'static>(
                         after_lp
                     };
 
-                    // 4. Distortion
+                    // 4. Distortion (with gain compensation for perceived loudness)
                     let after_dist = if effects.distortion {
                         let drive = 8.0_f32;
                         let distorted = (after_hp * drive).tanh();
+                        // Compensate for loudness increase from saturation
+                        // tanh compression + high drive increases perceived loudness ~3x
+                        let compensated = distorted * 0.35;
                         let mix = effects.distortion_mix;
-                        after_hp * (1.0 - mix) + distorted * mix
+                        after_hp * (1.0 - mix) + compensated * mix
                     } else {
                         after_hp
                     };
