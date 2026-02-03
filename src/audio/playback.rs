@@ -229,13 +229,29 @@ fn build_stream<T: SampleConvert + cpal::SizedSample + Send + 'static>(
                         after_hp
                     };
 
-                    // 5. Fade envelope
+                    // 5. Fade envelope (calculated based on position within slice)
                     let mut gain = 1.0_f32;
+                    let slice_len = (slice_end - slice_start) as f32;
+                    let current_offset = if pos >= slice_start {
+                        (pos - slice_start) as f32
+                    } else {
+                        0.0
+                    };
+                    let progress = if slice_len > 0.0 {
+                        (current_offset / slice_len).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+
                     if effects.fade_in > 0.0 {
-                        gain *= effects.fade_in;
+                        // Fade in: 0 -> 1 over first half of beat
+                        let fade_gain = (progress * 2.0_f32).clamp(0.0, 1.0);
+                        gain *= fade_gain;
                     }
                     if effects.fade_out > 0.0 {
-                        gain *= effects.fade_out;
+                        // Fade out: 1 -> 0 over first half of beat
+                        let fade_gain = (1.0_f32 - progress * 2.0_f32).clamp(0.0, 1.0);
+                        gain *= fade_gain;
                     }
                     let final_val = after_dist * gain;
 

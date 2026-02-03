@@ -107,28 +107,12 @@ fn process_command_segment(cmd: &[char], effects: &mut [StepEffects]) {
                 effects[i].stutter = true;
             }
             '\\' => {
-                // Fade out volume: ramp from 1.0 to 0.0 to end of line
-                let remaining = len - i;
-                if remaining > 1 {
-                    for s in i..len {
-                        let progress = (s - i) as f32 / (remaining - 1) as f32;
-                        effects[s].fade_out = 1.0 - progress;
-                    }
-                } else {
-                    effects[i].fade_out = 1.0;
-                }
+                // Single-beat fade out: flag this step only (envelope applied in playback)
+                effects[i].fade_out = 1.0;
             }
             '/' => {
-                // Fade in volume: ramp from 0 to 1 to end of line
-                let remaining = len - i;
-                if remaining > 1 {
-                    for s in i..len {
-                        let progress = (s - i) as f32 / (remaining - 1) as f32;
-                        effects[s].fade_in = progress;
-                    }
-                } else {
-                    effects[i].fade_in = 1.0;
-                }
+                // Single-beat fade in: flag this step only (envelope applied in playback)
+                effects[i].fade_in = 1.0;
             }
             'R' => {
                 effects[i].reverse = true;
