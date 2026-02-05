@@ -122,7 +122,8 @@ fn main() -> Result<()> {
     let duration_secs = audio_buf.duration_secs();
     let onsets = detect_onsets(&audio_buf.samples, sample_rate);
     let slices = make_slices(&onsets, &audio_buf.samples);
-    let bpm = target_bpm;
+    let original_bpm = target_bpm;
+    let mut bpm = target_bpm;
     let num_slices = slices.len();
 
     // Compute stutter length: 1/16 of a beat in samples
@@ -171,8 +172,9 @@ fn main() -> Result<()> {
         current_bank: 0,
     };
 
-    // Sequencer timing: one full cycle = half audio duration (since we have 32 slices now)
-    let step_duration = Duration::from_secs_f64(duration_secs / (total_steps as f64 * 2.0));
+    // Sequencer timing: base step duration at original BPM, scaled when BPM changes
+    let base_step_secs = duration_secs / (total_steps as f64 * 2.0);
+    let mut step_duration = Duration::from_secs_f64(base_step_secs);
     let mut current_step: usize = 0;
     let mut last_step = Instant::now();
     let mut sequencer_playing = true;
@@ -364,10 +366,28 @@ fn main() -> Result<()> {
                     }
                     pending_action = None;
                     confirm_prompt.clear();
+                } else if key.code == KeyCode::Enter {
+                    // --- Restart sequence from beginning ---
+                    current_step = 0;
+                    sequencer_playing = true;
+                    last_step = Instant::now();
                 } else if key.code == KeyCode::Char(':') && !is_ctrl {
                     // --- Enter command mode from any mode ---
                     command_mode = true;
                     command_buffer.clear();
+                } else if matches!(key.code, KeyCode::Char('+') | KeyCode::Char('=')) {
+                    // --- BPM increase (works in both play and edit mode) ---
+                    bpm = bpm.floor() + 1.0;
+                    step_duration = Duration::from_secs_f64(base_step_secs * (original_bpm / bpm));
+                    app.bpm = bpm;
+                } else if key.code == KeyCode::Char('-') && !edit_mode {
+                    // --- BPM decrease (play mode only; '-' is used in edit mode) ---
+                    let new_bpm = bpm.floor() - if bpm == bpm.floor() { 1.0 } else { 0.0 };
+                    if new_bpm >= 1.0 {
+                        bpm = new_bpm;
+                        step_duration = Duration::from_secs_f64(base_step_secs * (original_bpm / bpm));
+                        app.bpm = bpm;
+                    }
                 } else if edit_mode {
                     // --- Edit mode ---
                     handle_edit_key(
@@ -410,6 +430,8 @@ fn main() -> Result<()> {
                             sequencer_playing = !sequencer_playing;
                             if sequencer_playing {
                                 last_step = Instant::now();
+                            } else {
+                                state.stop();
                             }
                         }
                         KeyCode::Tab => {
