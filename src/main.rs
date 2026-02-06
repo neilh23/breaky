@@ -333,6 +333,8 @@ fn main() -> Result<()> {
     // Command / confirm state
     let mut command_mode = false;
     let mut command_buffer = String::new();
+    let mut command_history: Vec<String> = Vec::new();
+    let mut history_index: Option<usize> = None;
     let mut status_message = String::new();
     let mut status_time: Option<Instant> = None;
     let mut confirm_prompt = String::new();
@@ -446,11 +448,19 @@ fn main() -> Result<()> {
                         KeyCode::Esc => {
                             command_mode = false;
                             command_buffer.clear();
+                            history_index = None;
                         }
                         KeyCode::Enter => {
                             command_mode = false;
                             let cmd = command_buffer.clone();
                             command_buffer.clear();
+                            // Add to history if non-empty and different from last
+                            if !cmd.is_empty() {
+                                if command_history.last() != Some(&cmd) {
+                                    command_history.push(cmd.clone());
+                                }
+                            }
+                            history_index = None;
                             let beats_snapshot = app.beats.clone();
                             execute_command(
                                 &cmd,
@@ -481,11 +491,34 @@ fn main() -> Result<()> {
                             let bs = (60.0 / bpm * sample_rate as f64) as u32;
                             stutter_len = bs / vars.stutter;
                         }
+                        KeyCode::Up => {
+                            if !command_history.is_empty() {
+                                history_index = Some(match history_index {
+                                    None => command_history.len() - 1,
+                                    Some(0) => 0,
+                                    Some(i) => i - 1,
+                                });
+                                command_buffer = command_history[history_index.unwrap()].clone();
+                            }
+                        }
+                        KeyCode::Down => {
+                            if let Some(i) = history_index {
+                                if i + 1 < command_history.len() {
+                                    history_index = Some(i + 1);
+                                    command_buffer = command_history[i + 1].clone();
+                                } else {
+                                    history_index = None;
+                                    command_buffer.clear();
+                                }
+                            }
+                        }
                         KeyCode::Backspace => {
                             command_buffer.pop();
+                            history_index = None;
                         }
                         KeyCode::Char(c) => {
                             command_buffer.push(c);
+                            history_index = None;
                         }
                         _ => {}
                     }
