@@ -469,6 +469,7 @@ fn main() -> Result<()> {
                                 &mut vars,
                                 &beats_snapshot,
                                 dirty,
+                                num_slices,
                                 &mut should_quit,
                                 &mut status_message,
                                 &mut status_time,
@@ -689,6 +690,7 @@ fn execute_command(
     vars: &mut Variables,
     beats_for_save: &[String],
     is_dirty: bool,
+    num_slices: usize,
     should_quit: &mut bool,
     status_message: &mut String,
     status_time: &mut Option<Instant>,
@@ -744,6 +746,17 @@ fn execute_command(
                 "bpm={} lp={} hp={} dist={} fade={} slow={} fast={} stutter={}",
                 vars.bpm, vars.lp, vars.hp, vars.dist, vars.fade, vars.slow, vars.fast, vars.stutter
             );
+            *status_time = Some(Instant::now());
+        }
+        "bank" => {
+            use analysis::slicer::SLICES_PER_BANK;
+            let bank0_count = num_slices.min(SLICES_PER_BANK);
+            let bank1_count = num_slices.saturating_sub(SLICES_PER_BANK).min(SLICES_PER_BANK);
+            let mut msg = format!("{}: {} slices | Bank 0: 0-{}", sample_name, num_slices, bank0_count.saturating_sub(1));
+            if bank1_count > 0 {
+                msg.push_str(&format!(" | Bank 1: {}-{}", SLICES_PER_BANK, SLICES_PER_BANK + bank1_count - 1));
+            }
+            *status_message = msg;
             *status_time = Some(Instant::now());
         }
         "e!" => {
