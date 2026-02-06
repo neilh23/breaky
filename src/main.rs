@@ -356,6 +356,7 @@ fn main() -> Result<()> {
     let mut current_step: usize = 0;
     let mut last_step = Instant::now();
     let mut sequencer_playing = true;
+    let mut stop_at_step: Option<usize> = None;
 
     // Edit state
     let mut edit_mode = false;
@@ -461,6 +462,11 @@ fn main() -> Result<()> {
                 }
             }
             current_step = (current_step + 1) % total_steps;
+            if stop_at_step == Some(current_step) {
+                sequencer_playing = false;
+                stop_at_step = None;
+                state.stop();
+            }
             last_step += step_duration;
         }
 
@@ -640,10 +646,26 @@ fn main() -> Result<()> {
                     pending_action = None;
                     confirm_prompt.clear();
                 } else if key.code == KeyCode::Enter {
-                    // --- Restart sequence from beginning ---
-                    current_step = 0;
-                    sequencer_playing = true;
-                    last_step = Instant::now();
+                    if edit_mode {
+                        // --- Play only the current line, then stop ---
+                        let mut line_start = 0usize;
+                        for i in 0..cursor_line {
+                            let p = config::ParsedBeatLine::parse(&app.beats[i]);
+                            line_start += p.step_count();
+                        }
+                        let p = config::ParsedBeatLine::parse(&app.beats[cursor_line]);
+                        let line_end = line_start + p.step_count();
+                        current_step = line_start;
+                        stop_at_step = Some(line_end);
+                        sequencer_playing = true;
+                        last_step = Instant::now();
+                    } else {
+                        // --- Restart sequence from beginning ---
+                        current_step = 0;
+                        stop_at_step = None;
+                        sequencer_playing = true;
+                        last_step = Instant::now();
+                    }
                 } else if key.code == KeyCode::Char(':') && !is_ctrl {
                     // --- Enter command mode from any mode ---
                     command_mode = true;
@@ -707,6 +729,7 @@ fn main() -> Result<()> {
                         }
                         KeyCode::Char(' ') => {
                             sequencer_playing = !sequencer_playing;
+                            stop_at_step = None;
                             if sequencer_playing {
                                 last_step = Instant::now();
                             } else {
