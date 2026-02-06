@@ -121,9 +121,11 @@ fn build_stream<T: SampleConvert + cpal::SizedSample + Send + 'static>(
     let mut last_effects = StepEffects::default();
     let mut effects_changed = false;
 
-    // Precompute filter coefficients
-    let lp_alpha = compute_lp_alpha(800.0, sample_rate as f32);
-    let hp_alpha = compute_hp_alpha(2000.0, sample_rate as f32);
+    // Filter coefficients (recomputed when cutoff changes)
+    let mut lp_alpha = compute_lp_alpha(800.0, sample_rate as f32);
+    let mut hp_alpha = compute_hp_alpha(2000.0, sample_rate as f32);
+    let mut cached_lp_cutoff = 800.0_f32;
+    let mut cached_hp_cutoff = 2000.0_f32;
 
     let stream = device
         .build_output_stream(
@@ -135,6 +137,27 @@ fn build_stream<T: SampleConvert + cpal::SizedSample + Send + 'static>(
                     }
                     return;
                 }
+
+                // Read variable atomics
+                let lp_cutoff = f32::from_bits(state.lp_cutoff.load(Ordering::Relaxed));
+                let hp_cutoff = f32::from_bits(state.hp_cutoff.load(Ordering::Relaxed));
+                let dist_amount = f32::from_bits(state.dist_amount.load(Ordering::Relaxed));
+                let fade_point = f32::from_bits(state.fade_point.load(Ordering::Relaxed));
+                let slow_ratio = f32::from_bits(state.slow_ratio.load(Ordering::Relaxed)) as f64;
+                let fast_ratio = f32::from_bits(state.fast_ratio.load(Ordering::Relaxed)) as f64;
+
+                // Recompute filter coefficients if cutoff changed
+                if lp_cutoff != cached_lp_cutoff {
+                    lp_alpha = compute_lp_alpha(lp_cutoff, sample_rate as f32);
+                    cached_lp_cutoff = lp_cutoff;
+                }
+                if hp_cutoff != cached_hp_cutoff {
+                    hp_alpha = compute_hp_alpha(hp_cutoff, sample_rate as f32);
+                    cached_hp_cutoff = hp_cutoff;
+                }
+
+                // Compute fade multiplier from fade_point
+                let fade_mult = if fade_point > 0.0 { 1.0_f32 / fade_point } else { 1.0 };
 
                 // Check for retrigger
                 if state.retrigger.swap(false, Ordering::Acquire) {
@@ -175,9 +198,9 @@ fn build_stream<T: SampleConvert + cpal::SizedSample + Send + 'static>(
                 let pitch_ratio = if effects.pitch_cents != 0 {
                     2.0_f64.powf(effects.pitch_cents as f64 / 1200.0)
                 } else if effects.half_speed {
-                    0.5
+                    slow_ratio
                 } else if effects.double_speed {
-                    2.0
+                    fast_ratio
                 } else {
                     1.0
                 };
@@ -221,7 +244,7 @@ fn build_stream<T: SampleConvert + cpal::SizedSample + Send + 'static>(
 
                     // 4. Distortion (with gain compensation for perceived loudness)
                     let after_dist = if effects.distortion {
-                        let drive = 8.0_f32;
+                        let drive = dist_amount * 40.0;
                         let distorted = (after_hp * drive).tanh();
                         // Compensate for loudness increase from saturation
                         // tanh compression + high drive increases perceived loudness ~3x
@@ -247,13 +270,13 @@ fn build_stream<T: SampleConvert + cpal::SizedSample + Send + 'static>(
                     };
 
                     if effects.fade_in > 0.0 {
-                        // Fade in: 0 -> 1 over first half of beat
-                        let fade_gain = (progress * 2.0_f32).clamp(0.0, 1.0);
+                        // Fade in: 0 -> 1 over fade_point fraction of beat
+                        let fade_gain = (progress * fade_mult).clamp(0.0, 1.0);
                         gain *= fade_gain;
                     }
                     if effects.fade_out > 0.0 {
-                        // Fade out: 1 -> 0 over first half of beat
-                        let fade_gain = (1.0_f32 - progress * 2.0_f32).clamp(0.0, 1.0);
+                        // Fade out: 1 -> 0 over fade_point fraction of beat
+                        let fade_gain = (1.0_f32 - progress * fade_mult).clamp(0.0, 1.0);
                         gain *= fade_gain;
                     }
                     let final_val = after_dist * gain;

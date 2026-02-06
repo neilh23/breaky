@@ -43,6 +43,18 @@ pub struct PlaybackState {
     pub retrigger: AtomicBool,
     /// Packed effect flags for the current step.
     pub effect_flags: AtomicU64,
+    /// Low-pass filter cutoff frequency (Hz), stored as f32 bits.
+    pub lp_cutoff: AtomicU32,
+    /// High-pass filter cutoff frequency (Hz), stored as f32 bits.
+    pub hp_cutoff: AtomicU32,
+    /// Distortion amount (0.0-1.0), stored as f32 bits.
+    pub dist_amount: AtomicU32,
+    /// Fade point (0.0-1.0), stored as f32 bits.
+    pub fade_point: AtomicU32,
+    /// Slow speed ratio, stored as f32 bits.
+    pub slow_ratio: AtomicU32,
+    /// Fast speed ratio, stored as f32 bits.
+    pub fast_ratio: AtomicU32,
 }
 
 impl PlaybackState {
@@ -56,6 +68,12 @@ impl PlaybackState {
             stutter_start: AtomicU32::new(0),
             retrigger: AtomicBool::new(false),
             effect_flags: AtomicU64::new(0),
+            lp_cutoff: AtomicU32::new(800.0_f32.to_bits()),
+            hp_cutoff: AtomicU32::new(2000.0_f32.to_bits()),
+            dist_amount: AtomicU32::new(0.2_f32.to_bits()),
+            fade_point: AtomicU32::new(0.5_f32.to_bits()),
+            slow_ratio: AtomicU32::new(0.5_f32.to_bits()),
+            fast_ratio: AtomicU32::new(2.0_f32.to_bits()),
         })
     }
 

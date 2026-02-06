@@ -8,6 +8,20 @@ pub struct BreakConfig {
     pub sample: String,
     pub bpm: f64,
     pub beats: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lp: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hp: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dist: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stutter: Option<u32>,
 }
 
 impl BreakConfig {
@@ -17,6 +31,13 @@ impl BreakConfig {
             sample: file_name.to_string(),
             bpm,
             beats: vec!["qwertyuiasdfghjk".to_string()],
+            lp: None,
+            hp: None,
+            dist: None,
+            fade: None,
+            slow: None,
+            fast: None,
+            stutter: None,
         }
     }
 

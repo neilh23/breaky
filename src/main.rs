@@ -62,6 +62,147 @@ enum PendingAction {
     Reload,
 }
 
+/// Configurable variables for the engine.
+struct Variables {
+    bpm: f64,
+    lp: f32,
+    hp: f32,
+    dist: f32,
+    fade: f32,
+    slow: f64,
+    fast: f64,
+    stutter: u32,
+}
+
+impl Variables {
+    fn defaults(bpm: f64) -> Self {
+        Self {
+            bpm,
+            lp: 800.0,
+            hp: 2000.0,
+            dist: 0.2,
+            fade: 0.5,
+            slow: 0.5,
+            fast: 2.0,
+            stutter: 16,
+        }
+    }
+
+    fn from_config(config: &BreakConfig) -> Self {
+        Self {
+            bpm: config.bpm,
+            lp: config.lp.unwrap_or(800.0),
+            hp: config.hp.unwrap_or(2000.0),
+            dist: config.dist.unwrap_or(0.2),
+            fade: config.fade.unwrap_or(0.5),
+            slow: config.slow.unwrap_or(0.5),
+            fast: config.fast.unwrap_or(2.0),
+            stutter: config.stutter.unwrap_or(16),
+        }
+    }
+
+    fn sync_to_state(&self, state: &PlaybackState) {
+        use std::sync::atomic::Ordering::Relaxed;
+        state.lp_cutoff.store(self.lp.to_bits(), Relaxed);
+        state.hp_cutoff.store(self.hp.to_bits(), Relaxed);
+        state.dist_amount.store(self.dist.to_bits(), Relaxed);
+        state.fade_point.store(self.fade.to_bits(), Relaxed);
+        state.slow_ratio.store((self.slow as f32).to_bits(), Relaxed);
+        state.fast_ratio.store((self.fast as f32).to_bits(), Relaxed);
+    }
+
+    fn apply_to_config(&self, config: &mut BreakConfig) {
+        config.bpm = self.bpm;
+        config.lp = if (self.lp - 800.0).abs() > f32::EPSILON { Some(self.lp) } else { None };
+        config.hp = if (self.hp - 2000.0).abs() > f32::EPSILON { Some(self.hp) } else { None };
+        config.dist = if (self.dist - 0.2).abs() > f32::EPSILON { Some(self.dist) } else { None };
+        config.fade = if (self.fade - 0.5).abs() > f32::EPSILON { Some(self.fade) } else { None };
+        config.slow = if (self.slow - 0.5).abs() > f64::EPSILON { Some(self.slow) } else { None };
+        config.fast = if (self.fast - 2.0).abs() > f64::EPSILON { Some(self.fast) } else { None };
+        config.stutter = if self.stutter != 16 { Some(self.stutter) } else { None };
+    }
+}
+
+enum VarResult {
+    Show(String),
+    Set(String),
+    Error(String),
+}
+
+fn set_var_f32(
+    name: &str,
+    value_str: Option<&str>,
+    field: &mut f32,
+    validate: impl Fn(f32) -> bool,
+    range_msg: &str,
+    suffix: &str,
+) -> VarResult {
+    match value_str {
+        None => VarResult::Show(format!("{} = {}{}", name, field, suffix)),
+        Some(s) => match s.parse::<f32>() {
+            Ok(v) if validate(v) => {
+                *field = v;
+                VarResult::Set(format!("{} = {}{}", name, v, suffix))
+            }
+            Ok(_) => VarResult::Error(format!("{}: {}", name, range_msg)),
+            Err(e) => VarResult::Error(format!("{}: {}", name, e)),
+        },
+    }
+}
+
+fn set_var_f64(
+    name: &str,
+    value_str: Option<&str>,
+    field: &mut f64,
+    validate: impl Fn(f64) -> bool,
+    range_msg: &str,
+) -> VarResult {
+    match value_str {
+        None => VarResult::Show(format!("{} = {}", name, field)),
+        Some(s) => match s.parse::<f64>() {
+            Ok(v) if validate(v) => {
+                *field = v;
+                VarResult::Set(format!("{} = {}", name, v))
+            }
+            Ok(_) => VarResult::Error(format!("{}: {}", name, range_msg)),
+            Err(e) => VarResult::Error(format!("{}: {}", name, e)),
+        },
+    }
+}
+
+fn try_variable_command(cmd: &str, vars: &mut Variables) -> Option<VarResult> {
+    let (name, value_str) = match cmd.find('=') {
+        Some(pos) => (&cmd[..pos], Some(cmd[pos + 1..].trim())),
+        None => (cmd.trim(), None),
+    };
+
+    let result = match name {
+        "bpm" => set_var_f64("bpm", value_str, &mut vars.bpm, |v| v >= 1.0, "must be >= 1.0"),
+        "lp" => set_var_f32("lp", value_str, &mut vars.lp, |v| v > 0.0, "must be > 0.0", " Hz"),
+        "hp" => set_var_f32("hp", value_str, &mut vars.hp, |v| v > 0.0, "must be > 0.0", " Hz"),
+        "dist" => set_var_f32("dist", value_str, &mut vars.dist, |v| (0.0..=1.0).contains(&v), "must be 0.0-1.0", ""),
+        "fade" => set_var_f32("fade", value_str, &mut vars.fade, |v| v > 0.0 && v <= 1.0, "must be > 0.0 and <= 1.0", ""),
+        "slow" => set_var_f64("slow", value_str, &mut vars.slow, |v| v > 0.0 && v < 1.0, "must be > 0.0 and < 1.0"),
+        "fast" => set_var_f64("fast", value_str, &mut vars.fast, |v| (1.0..=10.0).contains(&v), "must be 1.0-10.0"),
+        "stutter" => {
+            return Some(match value_str {
+                None => VarResult::Show(format!("stutter = {}", vars.stutter)),
+                Some(s) => match s.parse::<u32>() {
+                    Ok(v) if (2..=16).contains(&v) => {
+                        vars.stutter = v;
+                        VarResult::Set(format!("stutter = {}", v))
+                    }
+                    Ok(_) => VarResult::Error("stutter: must be 2-16".to_string()),
+                    Err(e) => VarResult::Error(format!("stutter: {}", e)),
+                },
+            });
+        }
+        _ => return None,
+    };
+
+    Some(result)
+}
+
 fn main() -> Result<()> {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -124,11 +265,12 @@ fn main() -> Result<()> {
     let slices = make_slices(&onsets, &audio_buf.samples);
     let original_bpm = target_bpm;
     let mut bpm = target_bpm;
+    let mut vars = Variables::from_config(&break_config);
     let num_slices = slices.len();
 
-    // Compute stutter length: 1/16 of a beat in samples
+    // Compute stutter length based on vars.stutter
     let beat_samples = (60.0 / bpm * sample_rate as f64) as u32;
-    let stutter_len = beat_samples / 16;
+    let mut stutter_len = beat_samples / vars.stutter;
 
     // Build the beat sequence and effect sequence from config
     let mut beat_sequence = recompute_sequence(&break_config.beats);
@@ -138,6 +280,7 @@ fn main() -> Result<()> {
 
     // Create shared playback state
     let state = PlaybackState::new();
+    vars.sync_to_state(&state);
 
     // Start audio output
     let _stream =
@@ -313,7 +456,7 @@ fn main() -> Result<()> {
                                 &cmd,
                                 &yaml_path,
                                 &sample_name,
-                                bpm,
+                                &mut vars,
                                 &beats_snapshot,
                                 dirty,
                                 &mut should_quit,
@@ -330,6 +473,13 @@ fn main() -> Result<()> {
                                 &mut cursor_line,
                                 &mut cursor_col,
                             );
+                            // Sync variables to audio thread and update derived values
+                            vars.sync_to_state(&state);
+                            bpm = vars.bpm;
+                            app.bpm = bpm;
+                            step_duration = Duration::from_secs_f64(base_step_secs * (original_bpm / bpm));
+                            let bs = (60.0 / bpm * sample_rate as f64) as u32;
+                            stutter_len = bs / vars.stutter;
                         }
                         KeyCode::Backspace => {
                             command_buffer.pop();
@@ -360,7 +510,15 @@ fn main() -> Result<()> {
                                     &mut cursor_col,
                                     &mut status_message,
                                     &mut status_time,
+                                    &mut vars,
                                 );
+                                // Sync variables to audio thread and update derived values
+                                vars.sync_to_state(&state);
+                                bpm = vars.bpm;
+                                app.bpm = bpm;
+                                step_duration = Duration::from_secs_f64(base_step_secs * (original_bpm / bpm));
+                                let bs = (60.0 / bpm * sample_rate as f64) as u32;
+                                stutter_len = bs / vars.stutter;
                             }
                         }
                     }
@@ -378,15 +536,21 @@ fn main() -> Result<()> {
                 } else if matches!(key.code, KeyCode::Char('+') | KeyCode::Char('=')) {
                     // --- BPM increase (works in both play and edit mode) ---
                     bpm = bpm.floor() + 1.0;
+                    vars.bpm = bpm;
                     step_duration = Duration::from_secs_f64(base_step_secs * (original_bpm / bpm));
                     app.bpm = bpm;
+                    let bs = (60.0 / bpm * sample_rate as f64) as u32;
+                    stutter_len = bs / vars.stutter;
                 } else if key.code == KeyCode::Char('-') && !edit_mode {
                     // --- BPM decrease (play mode only; '-' is used in edit mode) ---
                     let new_bpm = bpm.floor() - if bpm == bpm.floor() { 1.0 } else { 0.0 };
                     if new_bpm >= 1.0 {
                         bpm = new_bpm;
+                        vars.bpm = bpm;
                         step_duration = Duration::from_secs_f64(base_step_secs * (original_bpm / bpm));
                         app.bpm = bpm;
+                        let bs = (60.0 / bpm * sample_rate as f64) as u32;
+                        stutter_len = bs / vars.stutter;
                     }
                 } else if edit_mode {
                     // --- Edit mode ---
@@ -489,7 +653,7 @@ fn execute_command(
     cmd: &str,
     yaml_path: &PathBuf,
     sample_name: &str,
-    bpm: f64,
+    vars: &mut Variables,
     beats_for_save: &[String],
     is_dirty: bool,
     should_quit: &mut bool,
@@ -511,7 +675,7 @@ fn execute_command(
             do_save(
                 yaml_path,
                 sample_name,
-                bpm,
+                vars,
                 beats_for_save,
                 dirty,
                 status_message,
@@ -522,7 +686,7 @@ fn execute_command(
             do_save(
                 yaml_path,
                 sample_name,
-                bpm,
+                vars,
                 beats_for_save,
                 dirty,
                 status_message,
@@ -542,6 +706,13 @@ fn execute_command(
                 *should_quit = true;
             }
         }
+        "vars" => {
+            *status_message = format!(
+                "bpm={} lp={} hp={} dist={} fade={} slow={} fast={} stutter={}",
+                vars.bpm, vars.lp, vars.hp, vars.dist, vars.fade, vars.slow, vars.fast, vars.stutter
+            );
+            *status_time = Some(Instant::now());
+        }
         "e!" => {
             do_reload(
                 yaml_path,
@@ -555,6 +726,7 @@ fn execute_command(
                 cursor_col,
                 status_message,
                 status_time,
+                vars,
             );
         }
         "e" => {
@@ -575,12 +747,21 @@ fn execute_command(
                     cursor_col,
                     status_message,
                     status_time,
+                    vars,
                 );
             }
         }
         other => {
-            *status_message = format!("Unknown command: {}", other);
-            *status_time = Some(Instant::now());
+            if let Some(result) = try_variable_command(other, vars) {
+                let msg = match result {
+                    VarResult::Show(m) | VarResult::Set(m) | VarResult::Error(m) => m,
+                };
+                *status_message = msg;
+                *status_time = Some(Instant::now());
+            } else {
+                *status_message = format!("Unknown command: {}", other);
+                *status_time = Some(Instant::now());
+            }
         }
     }
 }
@@ -588,17 +769,25 @@ fn execute_command(
 fn do_save(
     yaml_path: &PathBuf,
     sample_name: &str,
-    bpm: f64,
+    vars: &Variables,
     beats: &[String],
     dirty: &mut bool,
     status_message: &mut String,
     status_time: &mut Option<Instant>,
 ) {
-    let config = BreakConfig {
+    let mut config = BreakConfig {
         sample: sample_name.to_string(),
-        bpm,
+        bpm: vars.bpm,
         beats: beats.to_vec(),
+        lp: None,
+        hp: None,
+        dist: None,
+        fade: None,
+        slow: None,
+        fast: None,
+        stutter: None,
     };
+    vars.apply_to_config(&mut config);
     match config.save(yaml_path) {
         Ok(()) => {
             *dirty = false;
@@ -625,9 +814,11 @@ fn do_reload(
     cursor_col: &mut usize,
     status_message: &mut String,
     status_time: &mut Option<Instant>,
+    vars: &mut Variables,
 ) {
     match BreakConfig::load(yaml_path) {
         Ok(config) => {
+            *vars = Variables::from_config(&config);
             *beats = config.beats;
             *beat_sequence = recompute_sequence(beats);
             *effect_sequence = engine::effects::compute_effect_sequence(beats);
@@ -675,7 +866,7 @@ fn handle_edit_key(
     dirty: &mut bool,
     current_bank: &mut u8,
 ) {
-    use config::{visual_col_to_segment_step, ParsedBeatLine};
+    use config::{segment_step_to_visual_col, visual_col_to_segment_step, ParsedBeatLine};
 
     match code {
         KeyCode::Esc => {
@@ -701,6 +892,40 @@ fn handle_edit_key(
                 let max = parsed.display_width().saturating_sub(1);
                 *cursor_col = (*cursor_col).min(max);
                 snap_off_separator(&parsed, cursor_col);
+            }
+        }
+        KeyCode::Left if is_ctrl => {
+            // Ctrl-Left: jump to start of current segment, or previous segment
+            let parsed = ParsedBeatLine::parse(&beats[*cursor_line]);
+            if let Some((seg_idx, _)) =
+                visual_col_to_segment_step(&parsed, *cursor_col)
+            {
+                let seg_start = segment_step_to_visual_col(&parsed, seg_idx, 0);
+                if *cursor_col > seg_start {
+                    // Not at start of segment: go to start
+                    *cursor_col = seg_start;
+                } else if seg_idx > 0 {
+                    // At start of segment: go to start of previous segment
+                    *cursor_col = segment_step_to_visual_col(&parsed, seg_idx - 1, 0);
+                }
+            }
+        }
+        KeyCode::Right if is_ctrl => {
+            // Ctrl-Right: jump to end of current segment, or next segment
+            let parsed = ParsedBeatLine::parse(&beats[*cursor_line]);
+            if let Some((seg_idx, _)) =
+                visual_col_to_segment_step(&parsed, *cursor_col)
+            {
+                let step_count = parsed.step_count();
+                let seg_end = segment_step_to_visual_col(&parsed, seg_idx, step_count - 1);
+                if *cursor_col < seg_end {
+                    // Not at end of segment: go to end
+                    *cursor_col = seg_end;
+                } else if seg_idx + 1 < parsed.segment_count() {
+                    // At end of segment: go to end of next segment
+                    *cursor_col =
+                        segment_step_to_visual_col(&parsed, seg_idx + 1, step_count - 1);
+                }
             }
         }
         KeyCode::Left => {
@@ -793,6 +1018,8 @@ fn handle_edit_key(
             *sequencer_playing = !*sequencer_playing;
             if *sequencer_playing {
                 *last_step = Instant::now();
+            } else {
+                state.stop();
             }
         }
         KeyCode::Tab => {
