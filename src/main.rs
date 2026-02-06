@@ -5,7 +5,7 @@ mod engine;
 mod ui;
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -60,6 +60,14 @@ fn recompute_sequence(beats: &[String]) -> Vec<Option<usize>> {
 enum PendingAction {
     Quit,
     Reload,
+}
+
+/// Tracks what audio file is loaded in a bank range.
+#[derive(Clone)]
+struct BankEntry {
+    file_name: String,
+    start_slice: usize,
+    slice_count: usize,
 }
 
 /// Configurable variables for the engine.
@@ -262,11 +270,18 @@ fn main() -> Result<()> {
     let file_name = audio_buf.file_name.clone();
     let duration_secs = audio_buf.duration_secs();
     let onsets = detect_onsets(&audio_buf.samples, sample_rate);
-    let slices = make_slices(&onsets, &audio_buf.samples);
+    let mut slices = make_slices(&onsets, &audio_buf.samples);
     let original_bpm = target_bpm;
     let mut bpm = target_bpm;
     let mut vars = Variables::from_config(&break_config);
-    let num_slices = slices.len();
+    let mut num_slices = slices.len();
+
+    // Track loaded files in banks
+    let mut bank_entries: Vec<BankEntry> = vec![BankEntry {
+        file_name: file_name.clone(),
+        start_slice: 0,
+        slice_count: num_slices,
+    }];
 
     // Compute stutter length based on vars.stutter
     let beat_samples = (60.0 / bpm * sample_rate as f64) as u32;
@@ -282,9 +297,9 @@ fn main() -> Result<()> {
     let state = PlaybackState::new();
     vars.sync_to_state(&state);
 
-    // Start audio output
-    let _stream =
-        start_playback(&audio_buf, &slices, state.clone()).context("Failed to start playback")?;
+    // Start audio output (wrapped in Option to allow recreation)
+    let mut _stream_opt: Option<cpal::Stream> =
+        Some(start_playback(&audio_buf, &slices, state.clone()).context("Failed to start playback")?);
 
     // Setup terminal
     enable_raw_mode()?;
@@ -340,6 +355,7 @@ fn main() -> Result<()> {
     let mut confirm_prompt = String::new();
     let mut pending_action: Option<PendingAction> = None;
     let mut dirty = false;
+    let mut bank_load_path: Option<PathBuf> = None;
 
     let mut should_quit = false;
 
@@ -470,6 +486,8 @@ fn main() -> Result<()> {
                                 &beats_snapshot,
                                 dirty,
                                 num_slices,
+                                &bank_entries,
+                                &mut bank_load_path,
                                 &mut should_quit,
                                 &mut status_message,
                                 &mut status_time,
@@ -491,6 +509,41 @@ fn main() -> Result<()> {
                             step_duration = Duration::from_secs_f64(base_step_secs * (original_bpm / bpm));
                             let bs = (60.0 / bpm * sample_rate as f64) as u32;
                             stutter_len = bs / vars.stutter;
+
+                            // Handle bank loading if requested
+                            if let Some(load_path) = bank_load_path.take() {
+                                match load_bank(
+                                    &load_path,
+                                    sample_rate,
+                                    &mut audio_buf,
+                                    &mut slices,
+                                    &mut bank_entries,
+                                ) {
+                                    Ok(new_slice_count) => {
+                                        num_slices = slices.len();
+                                        app.num_slices = num_slices;
+                                        // Recreate audio stream with updated buffer
+                                        _stream_opt = None; // Drop old stream
+                                        match start_playback(&audio_buf, &slices, state.clone()) {
+                                            Ok(new_stream) => {
+                                                _stream_opt = Some(new_stream);
+                                                status_message = format!(
+                                                    "Loaded {} ({} slices)",
+                                                    load_path.display(),
+                                                    new_slice_count
+                                                );
+                                            }
+                                            Err(e) => {
+                                                status_message = format!("Failed to restart audio: {}", e);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        status_message = format!("Failed to load: {}", e);
+                                    }
+                                }
+                                status_time = Some(Instant::now());
+                            }
                         }
                         KeyCode::Up => {
                             if !command_history.is_empty() {
@@ -691,6 +744,8 @@ fn execute_command(
     beats_for_save: &[String],
     is_dirty: bool,
     num_slices: usize,
+    bank_entries: &[BankEntry],
+    bank_load_path: &mut Option<PathBuf>,
     should_quit: &mut bool,
     status_message: &mut String,
     status_time: &mut Option<Instant>,
@@ -748,16 +803,41 @@ fn execute_command(
             );
             *status_time = Some(Instant::now());
         }
-        "bank" => {
-            use analysis::slicer::SLICES_PER_BANK;
-            let bank0_count = num_slices.min(SLICES_PER_BANK);
-            let bank1_count = num_slices.saturating_sub(SLICES_PER_BANK).min(SLICES_PER_BANK);
-            let mut msg = format!("{}: {} slices | Bank 0: 0-{}", sample_name, num_slices, bank0_count.saturating_sub(1));
-            if bank1_count > 0 {
-                msg.push_str(&format!(" | Bank 1: {}-{}", SLICES_PER_BANK, SLICES_PER_BANK + bank1_count - 1));
+        cmd if cmd == "bank" || cmd.starts_with("bank ") => {
+            use analysis::slicer::{SLICES_PER_BANK, MAX_SLICES};
+            let args = cmd.strip_prefix("bank").unwrap().trim();
+
+            if args.is_empty() {
+                // :bank - show bank info using bank_entries
+                let mut msg = format!("{} slices total", num_slices);
+                for entry in bank_entries {
+                    let end_slice = entry.start_slice + entry.slice_count - 1;
+                    let bank_num = entry.start_slice / SLICES_PER_BANK;
+                    msg.push_str(&format!(
+                        " | Bank {}: {} ({}-{})",
+                        bank_num, entry.file_name, entry.start_slice, end_slice
+                    ));
+                }
+                *status_message = msg;
+                *status_time = Some(Instant::now());
+            } else if let Some(path_str) = args.strip_prefix("load ") {
+                // :bank load <path> - load file into next free bank
+                let path_str = path_str.trim();
+                if path_str.is_empty() {
+                    *status_message = "Usage: :bank load <path>".to_string();
+                    *status_time = Some(Instant::now());
+                } else if num_slices >= MAX_SLICES {
+                    *status_message = "No free banks available".to_string();
+                    *status_time = Some(Instant::now());
+                } else {
+                    *bank_load_path = Some(PathBuf::from(path_str));
+                    *status_message = format!("Loading {}...", path_str);
+                    *status_time = Some(Instant::now());
+                }
+            } else {
+                *status_message = format!("Unknown bank command: {}", args);
+                *status_time = Some(Instant::now());
             }
-            *status_message = msg;
-            *status_time = Some(Instant::now());
         }
         "e!" => {
             do_reload(
@@ -810,6 +890,74 @@ fn execute_command(
             }
         }
     }
+}
+
+/// Load an audio file into the next available bank slots.
+fn load_bank(
+    path: &Path,
+    target_sample_rate: u32,
+    audio_buf: &mut audio::buffer::AudioBuffer,
+    slices: &mut Vec<analysis::slicer::Slice>,
+    bank_entries: &mut Vec<BankEntry>,
+) -> Result<usize> {
+    use analysis::slicer::{make_slices, MAX_SLICES};
+
+    // Check if there's room for more slices
+    let current_slices = slices.len();
+    if current_slices >= MAX_SLICES {
+        anyhow::bail!("No free banks available (all {} slices used)", MAX_SLICES);
+    }
+
+    // Load the new audio file
+    let mut new_buf = audio::loader::load_audio(path)?;
+
+    // Resample if sample rates don't match
+    if new_buf.sample_rate != target_sample_rate {
+        let ratio = new_buf.sample_rate as f64 / target_sample_rate as f64;
+        new_buf.resample(ratio);
+        new_buf.sample_rate = target_sample_rate;
+    }
+
+    // Detect onsets and create slices for the new audio
+    let onsets = analysis::onset::detect_onsets(&new_buf.samples, target_sample_rate);
+    let new_slices = make_slices(&onsets, &new_buf.samples);
+
+    // Limit slices to available space
+    let available_slots = MAX_SLICES - current_slices;
+    let slices_to_add = new_slices.len().min(available_slots);
+
+    if slices_to_add == 0 {
+        anyhow::bail!("No slices could be created from the audio file");
+    }
+
+    // Offset for the new samples in the combined buffer
+    let sample_offset = audio_buf.samples.len();
+
+    // Add new slices with offset
+    for i in 0..slices_to_add {
+        let s = &new_slices[i];
+        slices.push(analysis::slicer::Slice {
+            start: s.start + sample_offset,
+            end: s.end + sample_offset,
+        });
+    }
+
+    // Append new samples to the buffer
+    audio_buf.samples.extend_from_slice(&new_buf.samples);
+
+    // Track this bank entry
+    bank_entries.push(BankEntry {
+        file_name: new_buf.file_name,
+        start_slice: current_slices,
+        slice_count: slices_to_add,
+    });
+
+    // Update file_name to show multiple files
+    if bank_entries.len() > 1 {
+        audio_buf.file_name = format!("{} files", bank_entries.len());
+    }
+
+    Ok(slices_to_add)
 }
 
 fn do_save(
