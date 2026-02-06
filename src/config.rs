@@ -165,7 +165,7 @@ pub fn is_valid_command_char(c: char) -> bool {
             | '(' | ')' | '[' | ']'
             | 'q' | 'w' | 'e' | 'r' | 't' | 'y' | 'u' | 'i' | 'o' | 'p'
             | 'a' | 's' | 'd' | 'f' | 'g' | 'h' | 'j' | 'k' | 'l'
-            | '0' | '1'  // Bank selection
+            | '0'..='9'  // Bank selection
             | '-'
     )
 }

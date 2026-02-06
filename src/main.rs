@@ -42,6 +42,26 @@ fn is_yaml_file(path: &PathBuf) -> bool {
     )
 }
 
+fn is_audio_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase()).as_deref(),
+        Some("wav" | "mp3" | "flac" | "ogg" | "aac" | "m4a")
+    )
+}
+
+fn list_audio_files(dir: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut files: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_file() && is_audio_file(&e.path()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    files.sort();
+    files
+}
+
 fn recompute_sequence(beats: &[String]) -> Vec<Option<usize>> {
     beats
         .iter()
@@ -270,7 +290,7 @@ fn main() -> Result<()> {
     let file_name = audio_buf.file_name.clone();
     let duration_secs = audio_buf.duration_secs();
     let onsets = detect_onsets(&audio_buf.samples, sample_rate);
-    let mut slices = make_slices(&onsets, &audio_buf.samples);
+    let mut slices = make_slices(&onsets, &audio_buf.samples, 2);
     let original_bpm = target_bpm;
     let mut bpm = target_bpm;
     let mut vars = Variables::from_config(&break_config);
@@ -512,34 +532,42 @@ fn main() -> Result<()> {
 
                             // Handle bank loading if requested
                             if let Some(load_path) = bank_load_path.take() {
-                                match load_bank(
-                                    &load_path,
-                                    sample_rate,
-                                    &mut audio_buf,
-                                    &mut slices,
-                                    &mut bank_entries,
-                                ) {
-                                    Ok(new_slice_count) => {
-                                        num_slices = slices.len();
-                                        app.num_slices = num_slices;
-                                        // Recreate audio stream with updated buffer
-                                        _stream_opt = None; // Drop old stream
-                                        match start_playback(&audio_buf, &slices, state.clone()) {
-                                            Ok(new_stream) => {
-                                                _stream_opt = Some(new_stream);
-                                                status_message = format!(
-                                                    "Loaded {} ({} slices)",
-                                                    load_path.display(),
-                                                    new_slice_count
-                                                );
-                                            }
-                                            Err(e) => {
-                                                status_message = format!("Failed to restart audio: {}", e);
+                                // Skip if empty path (file listing was already shown)
+                                if load_path.as_os_str().is_empty() {
+                                    continue;
+                                }
+
+                                let path = load_path;
+                                {
+                                    match load_bank(
+                                        &path,
+                                        sample_rate,
+                                        &mut audio_buf,
+                                        &mut slices,
+                                        &mut bank_entries,
+                                    ) {
+                                        Ok(new_slice_count) => {
+                                            num_slices = slices.len();
+                                            app.num_slices = num_slices;
+                                            // Recreate audio stream with updated buffer
+                                            _stream_opt = None; // Drop old stream
+                                            match start_playback(&audio_buf, &slices, state.clone()) {
+                                                Ok(new_stream) => {
+                                                    _stream_opt = Some(new_stream);
+                                                    status_message = format!(
+                                                        "Loaded {} ({} slices)",
+                                                        path.display(),
+                                                        new_slice_count
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    status_message = format!("Failed to restart audio: {}", e);
+                                                }
                                             }
                                         }
-                                    }
-                                    Err(e) => {
-                                        status_message = format!("Failed to load: {}", e);
+                                        Err(e) => {
+                                            status_message = format!("Failed to load: {}", e);
+                                        }
                                     }
                                 }
                                 status_time = Some(Instant::now());
@@ -697,11 +725,8 @@ fn main() -> Result<()> {
                             total_steps = beat_sequence.len();
                             dirty = true;
                         }
-                        KeyCode::Char('0') => {
-                            current_bank = 0;
-                        }
-                        KeyCode::Char('1') => {
-                            current_bank = 1;
+                        KeyCode::Char(c @ '0'..='9') => {
+                            current_bank = c.to_digit(10).unwrap() as u8;
                         }
                         code => {
                             if let Some(base_idx) = key_to_slice(code) {
@@ -820,19 +845,27 @@ fn execute_command(
                 }
                 *status_message = msg;
                 *status_time = Some(Instant::now());
-            } else if let Some(path_str) = args.strip_prefix("load ") {
-                // :bank load <path> - load file into next free bank
-                let path_str = path_str.trim();
-                if path_str.is_empty() {
-                    *status_message = "Usage: :bank load <path>".to_string();
-                    *status_time = Some(Instant::now());
-                } else if num_slices >= MAX_SLICES {
+            } else if args == "load" || args.starts_with("load ") {
+                // :bank load [path] - load file into next free bank
+                if num_slices >= MAX_SLICES {
                     *status_message = "No free banks available".to_string();
                     *status_time = Some(Instant::now());
                 } else {
-                    *bank_load_path = Some(PathBuf::from(path_str));
-                    *status_message = format!("Loading {}...", path_str);
-                    *status_time = Some(Instant::now());
+                    let path_str = args.strip_prefix("load").unwrap().trim();
+                    if path_str.is_empty() {
+                        // No path provided - list audio files in current directory
+                        let audio_files = list_audio_files(".");
+                        if audio_files.is_empty() {
+                            *status_message = "No audio files found. Use :bank load <path>".to_string();
+                        } else {
+                            *status_message = format!("Files: {}. Use :bank load <file>", audio_files.join(", "));
+                        }
+                        *status_time = Some(Instant::now());
+                    } else {
+                        *bank_load_path = Some(PathBuf::from(path_str));
+                        *status_message = format!("Loading {}...", path_str);
+                        *status_time = Some(Instant::now());
+                    }
                 }
             } else {
                 *status_message = format!("Unknown bank command: {}", args);
@@ -920,7 +953,7 @@ fn load_bank(
 
     // Detect onsets and create slices for the new audio
     let onsets = analysis::onset::detect_onsets(&new_buf.samples, target_sample_rate);
-    let new_slices = make_slices(&onsets, &new_buf.samples);
+    let new_slices = make_slices(&onsets, &new_buf.samples, 1);
 
     // Limit slices to available space
     let available_slots = MAX_SLICES - current_slices;
@@ -1221,11 +1254,8 @@ fn handle_edit_key(
                 state.trigger_stutter(stutter_len);
             }
         }
-        KeyCode::Char('0') => {
-            *current_bank = 0;
-        }
-        KeyCode::Char('1') => {
-            *current_bank = 1;
+        KeyCode::Char(c @ '0'..='9') => {
+            *current_bank = c.to_digit(10).unwrap() as u8;
         }
         code => {
             let parsed = ParsedBeatLine::parse(&beats[*cursor_line]);

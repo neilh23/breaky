@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-use crate::config::{segment_step_to_visual_col, ParsedBeatLine};
+use crate::config::{segment_step_to_visual_col, visual_col_to_segment_step, ParsedBeatLine};
 use crate::engine::state::PlaybackState;
 
 use super::input::KEY_LABELS;
@@ -154,9 +154,23 @@ impl App {
         let mut offset = 0usize;
         let mut lines: Vec<Line> = Vec::new();
 
+        // Determine the cursor's step_idx for column highlighting
+        let cursor_step_idx = if self.edit_mode {
+            let cursor_parsed = if self.cursor_line < self.beats.len() {
+                ParsedBeatLine::parse(&self.beats[self.cursor_line])
+            } else {
+                ParsedBeatLine::parse("")
+            };
+            visual_col_to_segment_step(&cursor_parsed, self.cursor_col)
+                .map(|(_, step)| step)
+        } else {
+            None
+        };
+
         for (line_idx, beat_raw) in self.beats.iter().enumerate() {
             let parsed = ParsedBeatLine::parse(beat_raw);
             let mut spans: Vec<Span> = Vec::new();
+            let is_cursor_line = self.edit_mode && line_idx == self.cursor_line;
 
             if line_idx == 0 {
                 spans.push(Span::styled(
@@ -171,8 +185,7 @@ impl App {
                 if seg_idx > 0 {
                     // Render ':' separator
                     let sep_visual_col = seg_idx * (parsed.step_count() + 1) - 1;
-                    let is_cursor = self.edit_mode
-                        && line_idx == self.cursor_line
+                    let is_cursor = is_cursor_line
                         && sep_visual_col == self.cursor_col;
                     let style = if is_cursor {
                         Style::default().fg(Color::DarkGray).bg(Color::Cyan)
@@ -192,17 +205,31 @@ impl App {
                     let global_idx = offset + step_idx;
                     let visual_col =
                         segment_step_to_visual_col(&parsed, seg_idx, step_idx);
-                    let is_cursor = self.edit_mode
-                        && line_idx == self.cursor_line
+                    let is_cursor = is_cursor_line
                         && visual_col == self.cursor_col;
                     let is_playhead =
                         global_idx == self.current_step && self.sequencer_playing;
+                    let is_col_highlight = is_cursor_line
+                        && !is_cursor
+                        && cursor_step_idx == Some(step_idx);
 
                     let style = if is_cursor {
                         Style::default()
                             .fg(Color::Black)
                             .bg(Color::Cyan)
                             .add_modifier(Modifier::BOLD)
+                    } else if is_col_highlight {
+                        // Column highlight: same step as cursor, lighter shade
+                        let base = if seg_idx == 0 {
+                            if ch == '_' || ch == '-' {
+                                Style::default().fg(Color::DarkGray)
+                            } else {
+                                Style::default().fg(Color::White)
+                            }
+                        } else {
+                            command_char_style(ch)
+                        };
+                        base.bg(Color::Indexed(236))
                     } else if is_playhead {
                         Style::default()
                             .fg(Color::Black)
@@ -313,7 +340,7 @@ fn command_char_style(ch: char) -> Style {
             .fg(Color::White)
             .add_modifier(Modifier::BOLD),
         // Bank selection
-        '0' | '1' => Style::default().fg(Color::LightYellow),
+        '0'..='9' => Style::default().fg(Color::LightYellow),
         // Pitch up: q-p
         'q' | 'w' | 'e' | 'r' | 't' | 'y' | 'u' | 'i' | 'o' | 'p' => {
             Style::default().fg(Color::LightGreen)

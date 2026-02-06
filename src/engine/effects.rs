@@ -204,13 +204,8 @@ fn process_command_segment(cmd: &[char], effects: &mut [StepEffects]) {
             ')' | ']' => {
                 // End markers handled by '(' and '['
             }
-            '0' => {
-                // Bank 0 (slices 0-15)
-                effects[i].bank = 0;
-            }
-            '1' => {
-                // Bank 1 (slices 16-31)
-                effects[i].bank = 1;
+            '0'..='9' => {
+                effects[i].bank = c as u8 - b'0';
             }
             _ => {
                 // Check for pitch shift

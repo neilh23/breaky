@@ -1,4 +1,4 @@
-pub const MAX_SLICES: usize = 32;
+pub const MAX_SLICES: usize = 320; // 10 banks * 32 slices
 pub const SLICES_PER_BANK: usize = 16;
 
 /// Maximum snap distance as a fraction of the ideal slice length.
@@ -15,16 +15,16 @@ pub struct Slice {
     pub end: usize,
 }
 
-/// Build up to MAX_SLICES slices of roughly equal length, snapping each
+/// Build up to `num_banks` banks of slices of roughly equal length, snapping each
 /// boundary to a nearby detected onset when one exists within tolerance,
 /// then snapping to the nearest zero crossing to avoid clicks.
-pub fn make_slices(onsets: &[usize], samples: &[f32]) -> Vec<Slice> {
+pub fn make_slices(onsets: &[usize], samples: &[f32], num_banks: usize) -> Vec<Slice> {
     let total_samples = samples.len();
     if total_samples == 0 {
         return Vec::new();
     }
 
-    let target_count = MAX_SLICES;
+    let target_count = SLICES_PER_BANK * num_banks;
     let ideal_len = total_samples as f64 / target_count as f64;
     let max_snap = (ideal_len * SNAP_FRACTION) as usize;
 
